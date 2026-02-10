@@ -2,6 +2,7 @@
 // API Route 用の認証ヘルパー
 // リクエストヘッダーから Bearer トークンを取り出し、
 // Supabase Auth でユーザー情報を取得する
+// さらに、許可リスト（allowed_users）に登録されているかチェックする
 // ========================================
 
 import { createServerClient } from "@/lib/supabase/server";
@@ -11,6 +12,39 @@ import { NextRequest, NextResponse } from "next/server";
 type AuthResult =
   | { success: true; userId: string; supabase: ReturnType<typeof createServerClient> }
   | { success: false; response: NextResponse };
+
+/**
+ * ユーザーのメールアドレスが許可リストに含まれているかチェックする
+ * allowed_users テーブルに、メールアドレスの完全一致 または ドメインの一致があれば許可
+ */
+async function isUserAllowed(
+  supabase: ReturnType<typeof createServerClient>,
+  email: string
+): Promise<boolean> {
+  // 大文字小文字を統一（Gmail は大文字でも小文字でも同じアドレスになるため）
+  const normalizedEmail = email.toLowerCase();
+
+  // メールアドレスの完全一致をチェック
+  const { data: emailMatch } = await supabase
+    .from("allowed_users")
+    .select("id")
+    .eq("type", "email")
+    .eq("pattern", normalizedEmail)
+    .limit(1);
+
+  if (emailMatch && emailMatch.length > 0) return true;
+
+  // ドメインの一致をチェック（例: "@company.co.jp"）
+  const domain = "@" + normalizedEmail.split("@")[1];
+  const { data: domainMatch } = await supabase
+    .from("allowed_users")
+    .select("id")
+    .eq("type", "domain")
+    .eq("pattern", domain)
+    .limit(1);
+
+  return domainMatch !== null && domainMatch.length > 0;
+}
 
 /**
  * API Route のリクエストからユーザー認証を行う
@@ -38,7 +72,7 @@ export async function authenticate(request: NextRequest): Promise<AuthResult> {
 
   // 2. トークンを使って Supabase クライアントを作成し、ユーザー情報を取得
   const supabase = createServerClient(accessToken);
-  const { data: { user }, error } = await supabase.auth.getUser();
+  const { data: {  user}, error } = await supabase.auth.getUser();
 
   if (error || !user) {
     return {
@@ -50,7 +84,18 @@ export async function authenticate(request: NextRequest): Promise<AuthResult> {
     };
   }
 
-  // 3. 認証成功
+  // 3. 許可リストに含まれているかチェック
+  if (!user.email || !(await isUserAllowed(supabase, user.email))) {
+    return {
+      success: false,
+      response: NextResponse.json(
+        { error: "このアカウントにはアクセス権限がありません。" },
+        { status: 403 }
+      ),
+    };
+  }
+
+  // 4. 認証成功
   return {
     success: true,
     userId: user.id,

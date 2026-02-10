@@ -125,3 +125,32 @@ CREATE TRIGGER on_auth_user_created
   AFTER INSERT ON auth.users
   FOR EACH ROW
   EXECUTE FUNCTION handle_new_user();
+
+-- ========================================
+-- 5. アクセス許可リスト
+-- このテーブルに登録されたメールアドレスまたはドメインのユーザーだけがログインできる
+-- Supabase ダッシュボードの Table Editor から追加・削除する
+-- ========================================
+CREATE TABLE allowed_users (
+  -- 行のID（自動生成）
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  -- 許可の種類: 'email'（個別のメールアドレス）または 'domain'（ドメイン全体）
+  type TEXT NOT NULL DEFAULT 'email'
+    CHECK (type IN ('email', 'domain')),
+  -- 許可パターン: メールアドレス（例: "taro@gmail.com"）またはドメイン（例: "@company.co.jp"）
+  pattern TEXT NOT NULL UNIQUE,
+  -- 説明メモ（例: "田中太郎" や "株式会社ABC"）
+  description TEXT NOT NULL DEFAULT '',
+  -- 登録日時
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- RLS を有効にする
+ALTER TABLE allowed_users ENABLE ROW LEVEL SECURITY;
+
+-- ポリシー: 認証済みユーザーは許可リストを読める（自分が許可されているかチェックするため）
+CREATE POLICY "認証済みユーザーは許可リストを読める" ON allowed_users
+  FOR SELECT USING (auth.role() = 'authenticated');
+
+-- ※ INSERT/UPDATE/DELETE のポリシーは作成しない
+-- → Supabase ダッシュボード（service_role）からのみ編集可能

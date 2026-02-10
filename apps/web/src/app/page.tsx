@@ -32,24 +32,75 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   // エラーメッセージ
   const [error, setError] = useState<string | null>(null);
+  // アクセス権限が確認済みかどうか
+  const [authorized, setAuthorized] = useState(false);
 
   // 新規タスク入力フォームの値
   const [newTitle, setNewTitle] = useState("");
   const [newDescription, setNewDescription] = useState("");
 
+  // ---------- アクセス権限チェック ----------
+  // allowed_users テーブルにメールアドレスまたはドメインが登録されているか確認する
+  async function checkAccess(email: string): Promise<boolean> {
+    // 大文字小文字を統一
+    const normalizedEmail = email.toLowerCase();
+
+    // メールアドレスの完全一致をチェック
+    const { data: emailMatch } = await supabase
+      .from("allowed_users")
+      .select("id")
+      .eq("type", "email")
+      .eq("pattern", normalizedEmail)
+      .limit(1);
+
+    if (emailMatch && emailMatch.length > 0) return true;
+
+    // ドメインの一致をチェック（例: "@company.co.jp"）
+    const domain = "@" + normalizedEmail.split("@")[1];
+    const { data: domainMatch } = await supabase
+      .from("allowed_users")
+      .select("id")
+      .eq("type", "domain")
+      .eq("pattern", domain)
+      .limit(1);
+
+    return domainMatch !== null && domainMatch.length > 0;
+  }
+
   // ---------- 初回読み込み時の処理 ----------
   // useEffect = コンポーネントが画面に表示されたときに1回だけ実行する
   useEffect(() => {
-    // 現在のセッション（ログイン状態）を取得
-    supabase.auth.getSession().then(({ data: { session: currentSession } }) => {
-      setSession(currentSession);
-      setLoading(false);
-    });
+    // URLに認証コード（code）があるか確認（Google OAuth からのリダイレクト時）
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get("code");
+
+    if (code) {
+      // 認証コードをセッション（ログイン情報）に交換する
+      supabase.auth.exchangeCodeForSession(code).then(({ data, error }) => {
+        if (!error && data.session) {
+          setSession(data.session);
+        }
+        // URLから認証コードを消す（見た目をきれいにする）
+        window.history.replaceState({}, "", "/");
+        setLoading(false);
+      });
+    } else {
+      // 通常のページ読み込み：現在のセッション（ログイン状態）を取得
+      supabase.auth.getSession().then(({ data: { session: currentSession } }) => {
+        setSession(currentSession);
+        setLoading(false);
+      });
+    }
 
     // ログイン状態が変わったときに自動で検知する（リスナー）
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (_event, newSession) => {
-        setSession(newSession);
+        // signOut() によるセッション消去は直接 setSession する（チェック不要）
+        if (newSession) {
+          setSession(newSession);
+        } else {
+          setSession(null);
+        }
       }
     );
 
@@ -57,14 +108,45 @@ export default function Home() {
     return () => subscription.unsubscribe();
   }, []);
 
-  // セッションが変わったらタスク一覧を取得
+  // ---------- セッションが変わったらアクセス権限をチェック ----------
   useEffect(() => {
-    if (session) {
+    if (!session) {
+      setAuthorized(false);
+      setTasks([]);
+      return;
+    }
+
+    const email = session.user.email;
+    if (!email) {
+      signOut();
+      setAuthorized(false);
+      return;
+    }
+
+    // 許可リストと照合する
+    checkAccess(email).then((allowed) => {
+      if (allowed) {
+        setAuthorized(true);
+      } else {
+        // 許可されていない → ログアウトしてエラーメッセージを表示
+        signOut();
+        setSession(null);
+        setAuthorized(false);
+        setError(
+          "このアカウントにはアクセス権限がありません。管理者にお問い合わせください。"
+        );
+      }
+    });
+  }, [session]);
+
+  // ---------- アクセス権限が確認されたらタスクを取得 ----------
+  useEffect(() => {
+    if (authorized) {
       fetchTasks();
     } else {
       setTasks([]);
     }
-  }, [session]);
+  }, [authorized]);
 
   // ---------- API 呼び出し関数 ----------
 
@@ -197,6 +279,12 @@ export default function Home() {
           <p className="mb-8 text-zinc-500">
             Google アカウントでログインしてください
           </p>
+          {/* エラー表示（アクセス権限がない場合など） */}
+          {error && (
+            <div className="mb-6 rounded-lg bg-red-50 p-4 text-red-600">
+              {error}
+            </div>
+          )}
           <button
             onClick={() => signInWithGoogle()}
             className="rounded-lg bg-blue-600 px-6 py-3 text-white transition-colors hover:bg-blue-700"
@@ -208,7 +296,16 @@ export default function Home() {
     );
   }
 
-  // ---------- ログイン済みの表示 ----------
+  // ---------- 権限確認中の表示 ----------
+  if (!authorized) {
+    return (
+      <div className="flex min-h-screen items-center justify-center">
+        <p className="text-lg text-zinc-500">権限を確認中...</p>
+      </div>
+    );
+  }
+
+  // ---------- ログイン済み＋権限確認済みの表示 ----------
   return (
     <div className="min-h-screen bg-zinc-50">
       {/* ========== ヘッダー ========== */}

@@ -14,7 +14,8 @@ export async function signInWithGoogle() {
     provider: "google",
     options: {
       // ログイン成功後にリダイレクトされるURL
-      redirectTo: `${window.location.origin}/api/auth/callback`,
+      // ログイン完了後にトップページに戻す（ブラウザ側で認証処理する）
+      redirectTo: `${window.location.origin}/`,
     },
   });
 
