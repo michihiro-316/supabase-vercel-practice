@@ -5,22 +5,8 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { authenticate } from "@/lib/auth";
+import { toTask, validateTitle, isValidStatus, isValidPriority } from "@/lib/task-helpers";
 import type { Task, CreateTaskInput, TaskRow } from "@task-manager/shared";
-
-// ---------- ヘルパー関数 ----------
-// Supabase から返ってくる snake_case のデータを camelCase に変換する
-function toTask(row: TaskRow): Task {
-  return {
-    id: row.id,
-    title: row.title,
-    description: row.description,
-    status: row.status as Task["status"],
-    priority: row.priority as Task["priority"],
-    userId: row.user_id,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
-}
 
 // ---------- GET /api/tasks ----------
 // 自分のタスク一覧を取得する
@@ -71,10 +57,22 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // 3. バリデーション（title は必須）
-  if (!body.title || body.title.trim() === "") {
+  // 3. バリデーション
+  const titleError = validateTitle(body.title);
+  if (titleError) {
+    return NextResponse.json({ error: titleError }, { status: 400 });
+  }
+
+  if (body.status !== undefined && !isValidStatus(body.status)) {
     return NextResponse.json(
-      { error: "タスク名は必須です" },
+      { error: "無効なステータスです" },
+      { status: 400 }
+    );
+  }
+
+  if (body.priority !== undefined && !isValidPriority(body.priority)) {
+    return NextResponse.json(
+      { error: "無効な優先度です" },
       { status: 400 }
     );
   }

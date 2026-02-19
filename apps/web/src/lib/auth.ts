@@ -1,31 +1,30 @@
 // ========================================
 // API Route 用の認証ヘルパー
-// リクエストヘッダーから Bearer トークンを取り出し、
-// Supabase Auth でユーザー情報を取得する
-// さらに、許可リスト（allowed_users）に登録されているかチェックする
+// Cookie からセッションを読み取り、ユーザー認証を行う
+// allowed_users のチェックは管理者クライアント（Secret key）で行う
+// → ブラウザからは allowed_users の中身が一切見えない
 // ========================================
 
-import { createServerClient } from "@/lib/supabase/server";
+import { createSSRClient, createAdminClient } from "@/lib/supabase/server";
 import { NextRequest, NextResponse } from "next/server";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 // 認証結果の型（成功 or 失敗）
 type AuthResult =
-  | { success: true; userId: string; supabase: ReturnType<typeof createServerClient> }
+  | { success: true; userId: string; supabase: SupabaseClient }
   | { success: false; response: NextResponse };
 
 /**
  * ユーザーのメールアドレスが許可リストに含まれているかチェックする
- * allowed_users テーブルに、メールアドレスの完全一致 または ドメインの一致があれば許可
+ * 管理者クライアント（Secret key）を使うので、
+ * allowed_users テーブルの REVOKE 後も動作する
  */
-async function isUserAllowed(
-  supabase: ReturnType<typeof createServerClient>,
-  email: string
-): Promise<boolean> {
-  // 大文字小文字を統一（Gmail は大文字でも小文字でも同じアドレスになるため）
+export async function isUserAllowed(email: string): Promise<boolean> {
+  const admin = createAdminClient();
   const normalizedEmail = email.toLowerCase();
 
   // メールアドレスの完全一致をチェック
-  const { data: emailMatch } = await supabase
+  const { data: emailMatch } = await admin
     .from("allowed_users")
     .select("id")
     .eq("type", "email")
@@ -36,7 +35,7 @@ async function isUserAllowed(
 
   // ドメインの一致をチェック（例: "@company.co.jp"）
   const domain = "@" + normalizedEmail.split("@")[1];
-  const { data: domainMatch } = await supabase
+  const { data: domainMatch } = await admin
     .from("allowed_users")
     .select("id")
     .eq("type", "domain")
@@ -48,6 +47,8 @@ async function isUserAllowed(
 
 /**
  * API Route のリクエストからユーザー認証を行う
+ * Cookie ベースのセッション管理を使用する
+ * CSRF 対策として X-Requested-With ヘッダーを検証する
  *
  * 使い方:
  *   const auth = await authenticate(request);
@@ -55,10 +56,26 @@ async function isUserAllowed(
  *   const { userId, supabase } = auth; // 成功ならユーザーIDとクライアントを使う
  */
 export async function authenticate(request: NextRequest): Promise<AuthResult> {
-  // 1. Authorization ヘッダーから Bearer トークンを取り出す
-  const authHeader = request.headers.get("Authorization");
+  // 0. CSRF 対策: ブラウザの fetch() から送られる独自ヘッダーを検証する
+  //    外部サイトからの <form> 送信や <img src="..."> では独自ヘッダーを付けられない
+  if (request.headers.get("X-Requested-With") !== "XMLHttpRequest") {
+    return {
+      success: false,
+      response: NextResponse.json(
+        { error: "不正なリクエストです" },
+        { status: 403 }
+      ),
+    };
+  }
 
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+  // 1. Cookie からセッションを読み取り、ユーザー情報を取得
+  const supabase = await createSSRClient();
+  const {
+    data: { user },
+    error,
+  } = await supabase.auth.getUser();
+
+  if (error || !user) {
     return {
       success: false,
       response: NextResponse.json(
@@ -68,24 +85,8 @@ export async function authenticate(request: NextRequest): Promise<AuthResult> {
     };
   }
 
-  const accessToken = authHeader.replace("Bearer ", "");
-
-  // 2. トークンを使って Supabase クライアントを作成し、ユーザー情報を取得
-  const supabase = createServerClient(accessToken);
-  const { data: {  user}, error } = await supabase.auth.getUser();
-
-  if (error || !user) {
-    return {
-      success: false,
-      response: NextResponse.json(
-        { error: "認証に失敗しました。再度ログインしてください。" },
-        { status: 401 }
-      ),
-    };
-  }
-
-  // 3. 許可リストに含まれているかチェック
-  if (!user.email || !(await isUserAllowed(supabase, user.email))) {
+  // 2. 許可リストに含まれているかチェック（管理者クライアントを使用）
+  if (!user.email || !(await isUserAllowed(user.email))) {
     return {
       success: false,
       response: NextResponse.json(
@@ -95,7 +96,7 @@ export async function authenticate(request: NextRequest): Promise<AuthResult> {
     };
   }
 
-  // 4. 認証成功
+  // 3. 認証成功
   return {
     success: true,
     userId: user.id,

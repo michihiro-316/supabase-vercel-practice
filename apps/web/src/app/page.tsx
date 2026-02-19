@@ -1,31 +1,35 @@
 // ========================================
 // タスク管理アプリのメインページ
 // URL: / （トップページ）
-// このファイルが全パーツ（認証・API）をつなぐ「司令塔」
+// ブラウザから Supabase に直接アクセスしない
+// 全ての操作は API Route（サーバー側）経由で行う
 // ========================================
 
 "use client"; // ブラウザで動くコンポーネント（ボタンクリックなどの操作があるため）
 
 import { useState, useEffect } from "react";
-import { signInWithGoogle, signOut, getAccessToken } from "@/lib/auth-client";
-import { supabase } from "@/lib/supabase/client";
 import type { Task, CreateTaskInput } from "@task-manager/shared";
 import {
   TASK_STATUS_LABELS,
   TASK_PRIORITY_LABELS,
 } from "@task-manager/shared";
-import type { Session } from "@supabase/supabase-js";
+
+// ユーザー情報の型（API から返ってくる形式）
+type UserInfo = {
+  id: string;
+  email: string;
+};
+
+// CSRF 対策: authenticate() を通る API に送る共通ヘッダー
+const CSRF_HEADERS = { "X-Requested-With": "XMLHttpRequest" } as const;
 
 // ========================================
 // メインコンポーネント
 // ========================================
 export default function Home() {
   // ---------- 状態（state）の定義 ----------
-  // useState = 画面に表示するデータを管理する仕組み
-  // [値, 値を変える関数] = useState(初期値)
-
-  // ログイン中のセッション情報（null = 未ログイン）
-  const [session, setSession] = useState<Session | null>(null);
+  // ログイン中のユーザー情報（null = 未ログイン）
+  const [user, setUser] = useState<UserInfo | null>(null);
   // タスク一覧
   const [tasks, setTasks] = useState<Task[]>([]);
   // 読み込み中かどうか
@@ -39,105 +43,54 @@ export default function Home() {
   const [newTitle, setNewTitle] = useState("");
   const [newDescription, setNewDescription] = useState("");
 
-  // ---------- アクセス権限チェック ----------
-  // allowed_users テーブルにメールアドレスまたはドメインが登録されているか確認する
-  async function checkAccess(email: string): Promise<boolean> {
-    // 大文字小文字を統一
-    const normalizedEmail = email.toLowerCase();
-
-    // メールアドレスの完全一致をチェック
-    const { data: emailMatch } = await supabase
-      .from("allowed_users")
-      .select("id")
-      .eq("type", "email")
-      .eq("pattern", normalizedEmail)
-      .limit(1);
-
-    if (emailMatch && emailMatch.length > 0) return true;
-
-    // ドメインの一致をチェック（例: "@company.co.jp"）
-    const domain = "@" + normalizedEmail.split("@")[1];
-    const { data: domainMatch } = await supabase
-      .from("allowed_users")
-      .select("id")
-      .eq("type", "domain")
-      .eq("pattern", domain)
-      .limit(1);
-
-    return domainMatch !== null && domainMatch.length > 0;
-  }
-
   // ---------- 初回読み込み時の処理 ----------
-  // useEffect = コンポーネントが画面に表示されたときに1回だけ実行する
   useEffect(() => {
-    // URLに認証コード（code）があるか確認（Google OAuth からのリダイレクト時）
-    const params = new URLSearchParams(window.location.search);
-    const code = params.get("code");
-
-    if (code) {
-      // 認証コードをセッション（ログイン情報）に交換する
-      supabase.auth.exchangeCodeForSession(code).then(({ data, error }) => {
-        if (!error && data.session) {
-          setSession(data.session);
+    async function init() {
+      try {
+        // URL にエラーパラメータがあるか確認（ログイン失敗時）
+        const params = new URLSearchParams(window.location.search);
+        const urlError = params.get("error");
+        if (urlError) {
+          setError("ログインに失敗しました。もう一度お試しください。");
+          window.history.replaceState({}, "", "/");
+          setLoading(false);
+          return;
         }
-        // URLから認証コードを消す（見た目をきれいにする）
-        window.history.replaceState({}, "", "/");
-        setLoading(false);
-      });
-    } else {
-      // 通常のページ読み込み：現在のセッション（ログイン状態）を取得
-      supabase.auth.getSession().then(({ data: { session: currentSession } }) => {
-        setSession(currentSession);
-        setLoading(false);
-      });
-    }
 
-    // ログイン状態が変わったときに自動で検知する（リスナー）
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (_event, newSession) => {
-        // signOut() によるセッション消去は直接 setSession する（チェック不要）
-        if (newSession) {
-          setSession(newSession);
+        // 1. セッション確認（Cookie ベース — サーバーが Cookie を読んで返す）
+        const sessionRes = await fetch("/api/auth/session");
+        if (!sessionRes.ok) {
+          setLoading(false);
+          return;
+        }
+        const { user: userData } = await sessionRes.json();
+        if (!userData) {
+          setLoading(false);
+          return;
+        }
+        setUser(userData);
+
+        // 2. アクセス権限チェック（サーバーが allowed_users を確認）
+        const accessRes = await fetch("/api/auth/check-access");
+        const { allowed } = await accessRes.json();
+        if (allowed) {
+          setAuthorized(true);
         } else {
-          setSession(null);
+          // 許可されていない → ログアウトしてエラーメッセージを表示
+          await fetch("/api/auth/logout", { method: "POST", headers: CSRF_HEADERS });
+          setUser(null);
+          setError(
+            "このアカウントにはアクセス権限がありません。管理者にお問い合わせください。"
+          );
         }
+      } catch {
+        setError("セッションの確認に失敗しました");
+      } finally {
+        setLoading(false);
       }
-    );
-
-    // コンポーネントが画面から消えるときにリスナーを解除する（メモリリーク防止）
-    return () => subscription.unsubscribe();
+    }
+    init();
   }, []);
-
-  // ---------- セッションが変わったらアクセス権限をチェック ----------
-  useEffect(() => {
-    if (!session) {
-      setAuthorized(false);
-      setTasks([]);
-      return;
-    }
-
-    const email = session.user.email;
-    if (!email) {
-      signOut();
-      setAuthorized(false);
-      return;
-    }
-
-    // 許可リストと照合する
-    checkAccess(email).then((allowed) => {
-      if (allowed) {
-        setAuthorized(true);
-      } else {
-        // 許可されていない → ログアウトしてエラーメッセージを表示
-        signOut();
-        setSession(null);
-        setAuthorized(false);
-        setError(
-          "このアカウントにはアクセス権限がありません。管理者にお問い合わせください。"
-        );
-      }
-    });
-  }, [session]);
 
   // ---------- アクセス権限が確認されたらタスクを取得 ----------
   useEffect(() => {
@@ -149,17 +102,13 @@ export default function Home() {
   }, [authorized]);
 
   // ---------- API 呼び出し関数 ----------
+  // ※ Authorization ヘッダーは不要（Cookie が自動送信される）
 
   // タスク一覧を取得する
   async function fetchTasks() {
     try {
-      const token = await getAccessToken();
-      if (!token) return;
-
       const response = await fetch("/api/tasks", {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
+        headers: CSRF_HEADERS,
       });
 
       if (!response.ok) {
@@ -176,15 +125,10 @@ export default function Home() {
 
   // 新しいタスクを作成する
   async function handleCreateTask(e: React.SyntheticEvent<HTMLFormElement>) {
-    // フォーム送信時のページリロードを防ぐ
     e.preventDefault();
-
     if (!newTitle.trim()) return;
 
     try {
-      const token = await getAccessToken();
-      if (!token) return;
-
       const body: CreateTaskInput = {
         title: newTitle.trim(),
         description: newDescription.trim() || undefined,
@@ -194,7 +138,7 @@ export default function Home() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
+          ...CSRF_HEADERS,
         },
         body: JSON.stringify(body),
       });
@@ -216,14 +160,11 @@ export default function Home() {
   // タスクのステータスを更新する
   async function handleUpdateStatus(taskId: string, newStatus: Task["status"]) {
     try {
-      const token = await getAccessToken();
-      if (!token) return;
-
       const response = await fetch(`/api/tasks/${taskId}`, {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
+          ...CSRF_HEADERS,
         },
         body: JSON.stringify({ status: newStatus }),
       });
@@ -241,14 +182,9 @@ export default function Home() {
   // タスクを削除する
   async function handleDeleteTask(taskId: string) {
     try {
-      const token = await getAccessToken();
-      if (!token) return;
-
       const response = await fetch(`/api/tasks/${taskId}`, {
         method: "DELETE",
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
+        headers: CSRF_HEADERS,
       });
 
       if (!response.ok) {
@@ -271,7 +207,7 @@ export default function Home() {
   }
 
   // ---------- 未ログイン時の表示 ----------
-  if (!session) {
+  if (!user) {
     return (
       <div className="flex min-h-screen items-center justify-center">
         <div className="text-center">
@@ -286,7 +222,9 @@ export default function Home() {
             </div>
           )}
           <button
-            onClick={() => signInWithGoogle()}
+            onClick={() => {
+              window.location.href = "/api/auth/login";
+            }}
             className="rounded-lg bg-blue-600 px-6 py-3 text-white transition-colors hover:bg-blue-700"
           >
             Google でログイン
@@ -314,10 +252,15 @@ export default function Home() {
           <h1 className="text-xl font-bold">タスク管理</h1>
           <div className="flex items-center gap-4">
             <span className="text-sm text-zinc-500">
-              {session.user.email}
+              {user.email}
             </span>
             <button
-              onClick={() => signOut()}
+              onClick={async () => {
+                await fetch("/api/auth/logout", { method: "POST", headers: CSRF_HEADERS });
+                setUser(null);
+                setAuthorized(false);
+                setTasks([]);
+              }}
               className="rounded bg-zinc-200 px-3 py-1 text-sm transition-colors hover:bg-zinc-300"
             >
               ログアウト

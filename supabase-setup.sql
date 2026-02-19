@@ -154,3 +154,66 @@ CREATE POLICY "認証済みユーザーは許可リストを読める" ON allowe
 
 -- ※ INSERT/UPDATE/DELETE のポリシーは作成しない
 -- → Supabase ダッシュボード（service_role）からのみ編集可能
+
+-- ========================================
+-- 6. セキュリティ強化（REVOKE + RLS 強化）
+-- 前回セッションで発見された脆弱性への対策
+-- ========================================
+
+-- ---------- allowed_users テーブルの権限剥奪 ----------
+-- anon と authenticated の全権限を剥奪する
+-- これにより、ブラウザからの直接アクセスが完全にブロックされる
+-- allowed_users へのアクセスは service_role key（サーバー側）のみ可能
+
+-- 古いポリシーを削除（全件読めるポリシーは危険なので削除）
+DROP POLICY IF EXISTS "認証済みユーザーは許可リストを読める" ON allowed_users;
+
+-- anon と authenticated の全権限を剥奪
+REVOKE ALL ON TABLE public.allowed_users FROM anon;
+REVOKE ALL ON TABLE public.allowed_users FROM authenticated;
+
+-- ---------- tasks テーブルの RLS 強化 ----------
+-- allowed_users に登録されている人だけがタスクを操作できるようにする
+
+-- PostgreSQL 関数: ユーザーが許可リストに含まれているかチェック
+-- SECURITY DEFINER = この関数は作成者（管理者）の権限で実行される
+-- → REVOKE で allowed_users へのアクセスを剥奪しても、この関数内からは読める
+CREATE OR REPLACE FUNCTION public.is_user_allowed(user_email TEXT)
+RETURNS BOOLEAN AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.allowed_users
+    WHERE (type = 'email' AND pattern = lower(user_email))
+       OR (type = 'domain' AND pattern = '@' || split_part(lower(user_email), '@', 2))
+  );
+$$ LANGUAGE sql SECURITY DEFINER;
+
+-- 既存の tasks RLS ポリシーを削除
+DROP POLICY IF EXISTS "自分のタスクを読める" ON tasks;
+DROP POLICY IF EXISTS "自分のタスクを作成できる" ON tasks;
+DROP POLICY IF EXISTS "自分のタスクを更新できる" ON tasks;
+DROP POLICY IF EXISTS "自分のタスクを削除できる" ON tasks;
+
+-- 新しいポリシー: 自分のタスク AND 許可ユーザーであること の両方を満たす場合のみ操作可能
+CREATE POLICY "許可ユーザーが自分のタスクを読める" ON tasks
+  FOR SELECT USING (
+    auth.uid() = user_id
+    AND is_user_allowed(auth.jwt()->>'email')
+  );
+
+CREATE POLICY "許可ユーザーが自分のタスクを作成できる" ON tasks
+  FOR INSERT WITH CHECK (
+    auth.uid() = user_id
+    AND is_user_allowed(auth.jwt()->>'email')
+  );
+
+CREATE POLICY "許可ユーザーが自分のタスクを更新できる" ON tasks
+  FOR UPDATE USING (
+    auth.uid() = user_id
+    AND is_user_allowed(auth.jwt()->>'email')
+  );
+
+CREATE POLICY "許可ユーザーが自分のタスクを削除できる" ON tasks
+  FOR DELETE USING (
+    auth.uid() = user_id
+    AND is_user_allowed(auth.jwt()->>'email')
+  );

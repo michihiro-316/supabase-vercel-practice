@@ -5,21 +5,8 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { authenticate } from "@/lib/auth";
-import type { Task, UpdateTaskInput, TaskRow } from "@task-manager/shared";
-
-// snake_case → camelCase 変換
-function toTask(row: TaskRow): Task {
-  return {
-    id: row.id,
-    title: row.title,
-    description: row.description,
-    status: row.status as Task["status"],
-    priority: row.priority as Task["priority"],
-    userId: row.user_id,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
-}
+import { toTask, validateTitle, isValidStatus, isValidPriority } from "@/lib/task-helpers";
+import type { UpdateTaskInput, TaskRow } from "@task-manager/shared";
 
 // Next.js App Router の動的ルートでは、params は Promise で取得する
 type RouteContext = {
@@ -67,6 +54,28 @@ export async function PUT(request: NextRequest, context: RouteContext) {
   } catch {
     return NextResponse.json(
       { error: "リクエストの形式が正しくありません" },
+      { status: 400 }
+    );
+  }
+
+  // バリデーション
+  if (body.title !== undefined) {
+    const titleError = validateTitle(body.title);
+    if (titleError) {
+      return NextResponse.json({ error: titleError }, { status: 400 });
+    }
+  }
+
+  if (body.status !== undefined && !isValidStatus(body.status)) {
+    return NextResponse.json(
+      { error: "無効なステータスです" },
+      { status: 400 }
+    );
+  }
+
+  if (body.priority !== undefined && !isValidPriority(body.priority)) {
+    return NextResponse.json(
+      { error: "無効な優先度です" },
       { status: 400 }
     );
   }
