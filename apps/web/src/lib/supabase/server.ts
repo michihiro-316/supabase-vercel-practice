@@ -7,15 +7,17 @@ import { createServerClient as createSSRServerClient } from "@supabase/ssr";
 import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 
-// 環境変数のチェック（NEXT_PUBLIC_ なし = サーバー専用）
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabasePublishableKey = process.env.SUPABASE_PUBLISHABLE_KEY;
-const supabaseSecretKey = process.env.SUPABASE_SECRET_KEY;
+// 環境変数を取得するヘルパー（ビルド時ではなく実行時にチェックする）
+function getSupabaseUrl(): string {
+  const url = process.env.SUPABASE_URL;
+  if (!url) throw new Error("環境変数 SUPABASE_URL を設定してください");
+  return url;
+}
 
-if (!supabaseUrl || !supabasePublishableKey) {
-  throw new Error(
-    "環境変数 SUPABASE_URL と SUPABASE_PUBLISHABLE_KEY を設定してください"
-  );
+function getSupabasePublishableKey(): string {
+  const key = process.env.SUPABASE_PUBLISHABLE_KEY;
+  if (!key) throw new Error("環境変数 SUPABASE_PUBLISHABLE_KEY を設定してください");
+  return key;
 }
 
 /**
@@ -25,7 +27,7 @@ if (!supabaseUrl || !supabasePublishableKey) {
  */
 export async function createSSRClient() {
   const cookieStore = await cookies();
-  return createSSRServerClient(supabaseUrl!, supabasePublishableKey!, {
+  return createSSRServerClient(getSupabaseUrl(), getSupabasePublishableKey(), {
     cookies: {
       getAll() {
         return cookieStore.getAll();
@@ -50,10 +52,11 @@ export async function createSSRClient() {
  * allowed_users テーブルのチェックなど、特権操作に使う
  */
 export function createAdminClient() {
-  if (!supabaseSecretKey) {
+  const secretKey = process.env.SUPABASE_SECRET_KEY;
+  if (!secretKey) {
     throw new Error(
       "環境変数 SUPABASE_SECRET_KEY を設定してください"
     );
   }
-  return createClient(supabaseUrl!, supabaseSecretKey);
+  return createClient(getSupabaseUrl(), secretKey);
 }
