@@ -17,11 +17,8 @@ export {
   type UpdateTaskInput,
 } from "./types/task";
 
-// ユーザー関連の型
-export { type UserProfile } from "./types/user";
-
 // データベース行の型（snake_case のまま）
-export { type TaskRow, type ProfileRow } from "./types/database";
+export { type TaskRow } from "./types/database";
 
 // 表示用の定数（日本語ラベルなど）
 export { TASK_STATUS_LABELS, TASK_PRIORITY_LABELS } from "./constants";

@@ -16,13 +16,3 @@ export interface TaskRow {
   created_at: string;    // snake_case
   updated_at: string;    // snake_case
 }
-
-// profiles テーブルの行の型
-export interface ProfileRow {
-  id: string;
-  email: string;
-  display_name: string;    // snake_case
-  photo_url: string | null; // snake_case
-  created_at: string;
-  last_login_at: string;
-}
